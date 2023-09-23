@@ -1,91 +1,53 @@
-from flask import Flask, render_template, request, send_file
-from PIL import Image, ImageOps
-import io
-import base64
+from flask import Flask, render_template, request
+from PIL import Image, ExifTags
+import os
 
 app = Flask(__name__)
 
-def process_image(input_image, remove_metadata=True, encrypt=False):
+# Directory to store uploaded images
+UPLOAD_FOLDER = 'uploads'
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+# Function to extract metadata from an image
+def extract_metadata(image_path):
     try:
-        metadata = None
-        image = Image.open(input_image)
+        image = Image.open(image_path)
+        exif_data = image._getexif()
+        metadata = {}
 
-        if 'A' in image.getbands():
-            image = image.convert('RGB')
+        if exif_data:
+            for tag, value in exif_data.items():
+                tag_name = ExifTags.TAGS.get(tag, tag)
+                metadata[tag_name] = value
 
-        if 'exif' in image.info:
-            metadata_bytes = image.info['exif']
-            if remove_metadata:
-                image = ImageOps.exif_transpose(image)
-        else:
-            metadata_bytes = None
-
-        if metadata_bytes:
-            metadata_hex = metadata_bytes.hex()
-        else:
-            metadata_hex = None
-
-        if encrypt:
-            image_bytes = io.BytesIO()
-            image.save(image_bytes, format="JPEG")
-            image_data = image_bytes.getvalue()
-
-            encrypted_image = base64.b64encode(image_data).decode()
-            return encrypted_image, metadata_hex
-
-        processed_image_io = io.BytesIO()
-        image.save(processed_image_io, format="JPEG")
-
-        processed_image_base64 = base64.b64encode(processed_image_io.getvalue()).decode()
-        return processed_image_base64, metadata_hex
+        return metadata
     except Exception as e:
-        return str(e), None
-
-def decrypt_image(encrypted_image):
-    try:
-        decrypted_data = base64.b64decode(encrypted_image.encode())
-        decrypted_image_io = io.BytesIO(decrypted_data)
-        return decrypted_image_io
-    except Exception as e:
-        return str(e)
+        print(f"Error extracting metadata: {e}")
+        return {}
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
+        # Check if an image was uploaded
         if 'image' not in request.files:
             return "No image uploaded."
 
         image_file = request.files['image']
 
+        # Check if the file is empty
         if image_file.filename == '':
             return "No image selected."
 
-        remove_metadata = request.form.get('remove_metadata', False)
-        encrypt = request.form.get('encrypt', False)
+        # Save the uploaded image
+        image_path = os.path.join(UPLOAD_FOLDER, image_file.filename)
+        image_file.save(image_path)
 
-        if encrypt:
-            processed_image, metadata = process_image(image_file, remove_metadata, encrypt)
-        else:
-            return "Encryption is not selected. Please enable encryption."
+        # Extract metadata from the image
+        metadata = extract_metadata(image_path)
 
-        if isinstance(processed_image, str):
-            if not processed_image.startswith('/9j/'):
-                return f"Error processing image: {processed_image}"
-
-        if encrypt:
-            encrypted_image_filename = 'encrypted_image.jpg'
-            with open(encrypted_image_filename, 'wb') as encrypted_file:
-                encrypted_file.write(base64.b64decode(processed_image.encode()))
-
-            decrypted_image_io = decrypt_image(processed_image)
-
-            return send_file(
-                decrypted_image_io,
-                as_attachment=True,
-                download_name='decrypted_image.jpg',
-                mimetype='image/jpeg'
-            )
-        return render_template('index.html', image=processed_image, metadata=metadata)
+        # Provide metadata information to the user
+        return render_template('metadata.html', metadata=metadata)
 
     return render_template('index.html')
 
